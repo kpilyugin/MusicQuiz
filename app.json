@@ -1,0 +1,5 @@
+{
+  "name": "Music quiz",
+  "description": "Music quiz made with Play Framework and Scala.js",
+  "success_url": "/"
+}
