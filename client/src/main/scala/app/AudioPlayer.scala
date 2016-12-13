@@ -13,12 +13,16 @@ object AudioPlayer {
     }
     audio.src = url
     audio.play()
-//    audio.onloadedmetadata = () => println(audio.duration)
+  }
+
+  def isPlaying: Boolean = {
+    audio != null
   }
 
   def stop(): Unit = {
     if (audio != null) {
       audio.pause()
+      audio = null
     }
   }
 }

@@ -15,8 +15,9 @@ import play.api.libs.json._
 import play.api.mvc.WebSocket.FrameFormatter
 import play.api.mvc._
 import shared.Protocol.Message
-import shared.{Protocol, User}
+import shared.{Protocol, User, UserScore}
 
+import scala.collection.mutable
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
 
@@ -26,15 +27,15 @@ object Application extends Controller {
     Ok(views.html.index())
   }
 
-  def chatWS(username: String): WebSocket[Message, Message] = WebSocket.tryAccept[Message] { request =>
-    QuizRoom.join(username).map { io =>
-      Right(io)
-    }
+  def startWs(username: String): WebSocket[Message, Message] = WebSocket.tryAccept[Message] {
+    request =>
+      QuizRoom.join(username).map { io =>
+        Right(io)
+      }
   }
 }
 
 object QuizRoom {
-
   lazy val default = {
     Akka.system.actorOf(Props[QuizRoom])
   }
@@ -52,34 +53,49 @@ object QuizRoom {
   }
 
   def processMessage(message: Message): Unit = {
-    println("processMessage")
-    default ? Start("")
+    default ? Reply(message)
   }
 }
 
 class QuizRoom extends Actor {
   val (enumerator, channel) = Concurrent.broadcast[Message]
-  var genre: String = _
+  val users = mutable.Map.empty[String, Int]
+
+  def getScores: Seq[UserScore] = {
+    var scores: Seq[UserScore] = Seq()
+    users.foreach({ case (user, score) =>
+      scores = scores :+ UserScore(user, score)
+    })
+    scores
+  }
 
   def receive = {
     case Join(username) => {
+      if (!users.contains(username)) {
+        users.put(username, 0)
+      }
       val user = User(username)
       sender ! Connected(user, enumerator)
-      self ! Start(username)
+      self ! Login(username)
     }
 
-    case Start(genre) => startGame(genre)
+    case Quiz(genre) => startQuiz(genre)
+
+    case Login(username) =>
+      val msg: Message = Message(username, "", -1, Seq(), getScores)
+      channel.push(msg)
+
+    case Reply(message) =>
+      val score: Int = users.getOrElse(message.username, 0)
+      users.put(message.username, score + message.answer)
+      self ! Quiz(message.genre)
   }
 
-  def startGame(genre: String) {
-    if (genre != "") {
-      this.genre = genre
-    }
-    findTracks(this.genre).onSuccess({
+  def startQuiz(genre: String) {
+    findTracks(genre).onSuccess({
       case tracks: Seq[Track] =>
         val r = scala.util.Random
-        val msg: Message = Message(r.nextInt(5), tracks)
-        println(Json.stringify(Json.toJson(msg)))
+        val msg: Message = Message("", genre, r.nextInt(5), tracks, getScores)
         channel.push(msg)
     })
   }
@@ -87,7 +103,11 @@ class QuizRoom extends Actor {
 
 case class Join(username: String)
 
-case class Start(genre: String)
+case class Quiz(genre: String)
+
+case class Login(username: String)
+
+case class Reply(message: Message)
 
 case class Connected(user: User, enumerator: Enumerator[Protocol.Message])
 
@@ -95,6 +115,8 @@ case class CannotConnect(msg: String)
 
 object JsonFormatters {
   implicit val trackFormat: Format[Track] = Json.format[Track]
+  implicit val userFormatter: Format[User] = Json.format[User]
+  implicit val scoreFormatter: Format[UserScore] = Json.format[UserScore]
   implicit val messageFormat: Format[Message] = Json.format[Message]
   implicit val messageFormatter: FrameFormatter[Message] = FrameFormatter.jsonFrame[Message]
 }

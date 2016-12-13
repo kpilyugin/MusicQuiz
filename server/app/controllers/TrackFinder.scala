@@ -29,7 +29,6 @@ object TrackFinder {
           val previewUrl: String = (item \ "preview_url").as[String]
           val popularity: Int = (item \ "popularity").as[Int]
           val track: Track = Track(name, artist, previewUrl, popularity)
-          println(track)
           tracks = tracks :+ track
         }
         quiz(tracks)

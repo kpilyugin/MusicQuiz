@@ -4,6 +4,7 @@ import music.Track
 import org.scalajs.dom._
 import org.scalajs.jquery.{jQuery => $}
 import shared.Protocol.Message
+import shared.UserScore
 import upickle.default._
 
 import scala.scalajs.js
@@ -24,40 +25,64 @@ object ClientApp extends js.JSApp {
 
   def startPanel = div(id := "startPanel") {
     form(`class` := "form-inline")(
-      div(id := "usernameForm", `class` := "form-group")(
+      span(style := "margin:100px 100px"),
+      div(id := "loginForm", `class` := "form-group")(
+        div(id := "usernameForm", `class` := "input-group")(
+          input(id := "username", `class` := "form-control", `type` := "text", placeholder := "Username")
+        ),
+        span(style := "margin:0px 5px"),
+        button(`class` := "btn btn-default", `type` := "button", onclick := { () =>
+          val username = $("#username").value().toString.trim
+          if (username != "") {
+            $("#usernameForm").removeClass("has-error")
+            client = QuizClient.connect(wsBaseUrl, username).map { c =>
+              $("#username").value("")
+              c
+            }
+          } else {
+            $("#usernameForm").addClass("has-error")
+          }
+          false
+        })("Login")
+      ),
+      span(style := "margin:0px 10px"),
+      div(id := "gameForm", `class` := "form-group hide")(
+        label(id := "helloUser"),
+        span(style := "margin:0px 5px"),
+        label("Genre:"),
+        span(style := "margin:0px 5px"),
         select(id := "genre", `class` := "form-control", `type` := "text", placeholder := "Genre")(
           option("Rock"),
           option("Pop"),
           option("Electro"),
           option("Country")
-        )
-      ),
-      span(style := "margin:0px 5px"),
-      button(`class` := "btn btn-default", `type` := "button", onclick := { () =>
-        val input = $("#genre").value().toString.trim
-        if (input == "") {
-          $("#usernameForm").addClass("has-error")
-        } else {
-          $("#usernameForm").removeClass("has-error")
-          client = QuizClient.connect(wsBaseUrl, input).map { c =>
-            $("#loginAs").text(s"Login as: ${c.genre}")
-            $("#username").value("")
-            c
+        ),
+        span(style := "margin:0px 5px"),
+        button(`class` := "btn btn-default", `type` := "button", onclick := { () =>
+          val genre = $("#genre").value().toString.trim
+          client.foreach {
+            _.start(genre)
           }
-        }
-        false
-      })("Start game"),
-      span(style := "margin:0px 5px"),
-      button(`class` := "btn btn-default", `type` := "button", onclick := { () =>
-        stop()
-      })("Stop")
+        })("Start game"),
+        span(style := "margin:0px 5px"),
+        button(`class` := "btn btn-default", `type` := "button", onclick := { () =>
+          stop()
+        })("Stop")
+      )
     )
   }
 
-  def tracksPanel = div(id := "tracksPanel")(
+  def tracksPanel = div(id := "tracksPanel", `class` := "hide")(
     div(`class` := "container")(
-      h3("Score = 0", id := "score"),
+      h3("Your score: 0", id := "score"),
       table(`class` := "table table-hover", id := "tracks")
+    )
+  )
+
+  def scoresPanel = div(id := "scoresPanel", `class` := "hide")(
+    div(`class` := "container")(
+      h3("Top scores"),
+      table(`class` := "table", id := "scores")
     )
   )
 
@@ -66,6 +91,12 @@ object ClientApp extends js.JSApp {
       tr(raw(name), onclick := { () =>
         onClick(index)
       }, id := "track" + index.toString)
+    )
+  }
+
+  def addScore(idx: Int, score: UserScore) = {
+    tbody(
+      tr(idx.toString + ") " + score.user + ": " + score.score.toString)
     )
   }
 
@@ -82,61 +113,102 @@ object ClientApp extends js.JSApp {
   }
 
   object QuizClient {
-    def connect(url: String, genre: String): Option[QuizClient] = {
+    def connect(url: String, username: String): Option[QuizClient] = {
       if (g.window.WebSocket.toString != "undefined") {
-        return Some(new QuizClient(url, genre))
+        return Some(new QuizClient(url, username))
       }
       None
     }
+  }
 
-    def receive(event: MessageEvent) = {
+  class QuizClient(url: String, myUsername: String) {
+    var myAnswer: Int = _
+    val socket = new WebSocket(url + myUsername)
+    var myGenre: String = _
+    socket.onmessage = onMessage _
+
+    def start(genre: String): Unit = {
+      myGenre = genre
+      send(Message(myUsername, genre, 0, Seq(), Seq()))
+    }
+
+    def reply(clicked: Int): Unit = {
+      AudioPlayer.stop()
+      val correct: Boolean = clicked == myAnswer
+      if (correct) {
+        $("#track" + clicked).css("background-color", "green")
+      } else {
+        $("#track" + myAnswer).css("background-color", "green")
+        $("#track" + clicked).css("background-color", "red")
+      }
+      send(Message(myUsername, myGenre,  if (myAnswer == clicked) 1 else -1, Seq(), Seq()))
+    }
+
+    def onMessage(event: MessageEvent): Unit = {
+      println("received message")
+      if (AudioPlayer.isPlaying) {
+        return
+      }
       val msg = read[Message](event.data.toString)
 
       msg match {
-        case Message(answer, tracks) => {
-
-          val tracksElem = document.getElementById("tracks")
-          while (tracksElem.firstChild != null) {
-            tracksElem.removeChild(tracksElem.firstChild)
-          }
-          for (i <- tracks.indices) {
-            val track: Track = tracks.apply(i)
-            val name: String = track.artist + " - " + track.name
-            tracksElem.appendChild(addTrack(name, i).render)
+        case Message(username, genre, answer, tracks, scores) => {
+          println("message for user " + username)
+          if (tracks.isEmpty && username == myUsername) {
+            $("#loginForm").addClass("hide")
+            $("#gameForm").removeClass("hide")
+            $("#helloUser").text("Hello, " + myUsername)
           }
 
-          val previewUrl: String = tracks.apply(answer).previewUrl
-          AudioPlayer.play(previewUrl)
-          client.foreach {
-            _.setAnswer(answer)
+          if (tracks.nonEmpty) {
+            $("#tracksPanel").removeClass("hide")
+
+            val tracksElem = document.getElementById("tracks")
+            while (tracksElem.firstChild != null) {
+              tracksElem.removeChild(tracksElem.firstChild)
+            }
+            for (i <- tracks.indices) {
+              val track: Track = tracks.apply(i)
+              val name: String = track.artist + " - " + track.name
+              tracksElem.appendChild(addTrack(name, i).render)
+            }
+
+            val previewUrl: String = tracks.apply(answer).previewUrl
+            AudioPlayer.play(previewUrl)
+            client.foreach {
+              _.setAnswer(answer)
+            }
+          } else {
+            $("#tracksPanel").addClass("hide")
+          }
+
+          if (scores.nonEmpty) {
+            $("#scoresPanel").removeClass("hide")
+            val scoresElem = document.getElementById("scores")
+            while (scoresElem.firstChild != null) {
+              scoresElem.removeChild(scoresElem.firstChild)
+            }
+            for (i <- scores.indices) {
+              val score = scores.apply(i)
+              if (score.user.equals(myUsername)) {
+                $("#score").text("Your score = " + score.score.toString)
+              }
+              scoresElem.appendChild(addScore(i + 1, score).render)
+            }
+          } else {
+            $("#scoresPanel").addClass("hide")
           }
         }
       }
     }
-  }
 
-  class QuizClient(url: String, val genre: String) {
-    var answer: Int = _
-    val socket = new WebSocket(url + genre)
-    socket.onmessage = QuizClient.receive _
-
-    def reply(clicked: Int): Unit = {
-      AudioPlayer.stop()
-      val correct: Boolean = clicked == answer
-      if (correct) {
-        $("#track" + clicked).css("background-color", "green")
-        score += 1
-      } else {
-        $("#track" + answer).css("background-color", "green")
-        $("#track" + clicked).css("background-color", "red")
-        score -= 1
-      }
-      $("#score").text("Score: " + score.toString)
-      send(Message(clicked, Seq()))
-    }
 
     def stop(): Unit = {
       AudioPlayer.stop()
+      $("#loginForm").removeClass("hide")
+      $("#gameForm").addClass("hide")
+      $("#tracksPanel").addClass("hide")
+      $("#scoresPanel").addClass("hide")
       val tracksElem = document.getElementById("tracks")
       while (tracksElem.firstChild != null) {
         tracksElem.removeChild(tracksElem.firstChild)
@@ -148,7 +220,7 @@ object ClientApp extends js.JSApp {
     }
 
     def setAnswer(answer: Int): Unit = {
-      this.answer = answer
+      this.myAnswer = answer
     }
 
     def close() = socket.close()
@@ -161,5 +233,6 @@ object ClientApp extends js.JSApp {
     val content = document.getElementById("content")
     content.appendChild(startPanel.render)
     content.appendChild(tracksPanel.render)
+    content.appendChild(scoresPanel.render)
   }
 }
