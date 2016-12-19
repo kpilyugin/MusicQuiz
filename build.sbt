@@ -9,11 +9,13 @@ lazy val server = (project in file("server")).settings(
   pipelineStages := Seq(scalaJSProd, gzip),
   libraryDependencies ++= Seq(
     "com.vmunier" %% "play-scalajs-scripts" % "0.1.0",
+    "com.typesafe.akka" %% "akka-persistence" % "2.4.12",
+    "org.iq80.leveldb" % "leveldb" % "0.7",
+    "org.fusesource.leveldbjni" % "leveldbjni-all" % "1.8",
     "org.webjars" % "jquery" % "1.11.1",
     "org.webjars" % "bootstrap" % "3.3.5",
     ws
-  ),
-  EclipseKeys.skipParents in ThisBuild := false).
+  )).
   enablePlugins(PlayScala).
   aggregate(clients.map(projectToRef): _*).
   dependsOn(sharedJvm)

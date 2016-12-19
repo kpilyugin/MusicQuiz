@@ -2,17 +2,16 @@ package controllers
 
 import music.Track
 import play.api.libs.json.{JsArray, JsValue}
-import play.api.libs.ws.{WS, WSRequestHolder}
-import play.api.Play.current
+import play.api.libs.ws.{WSClient, WSRequest}
 
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.Random
 
 object TrackFinder {
-  def findTracks(genre: String)(implicit ec: ExecutionContext): Future[Seq[Track]] = {
+  def findTracks(wsClient: WSClient, genre: String)(implicit ec: ExecutionContext): Future[Seq[Track]] = {
     val offset: Int = scala.util.Random.nextInt(10) * 20
     val url = "https://api.spotify.com/v1/search"
-    val requestHolder: WSRequestHolder = WS.url(url)
+    val requestHolder: WSRequest = wsClient.url(url)
         .withQueryString(
           "q" -> ("genre:" + genre),
           "type" -> "track",

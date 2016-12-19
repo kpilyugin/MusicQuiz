@@ -59,9 +59,8 @@ object ClientApp extends js.JSApp {
         ),
         span(style := "margin:0px 5px"),
         button(`class` := "btn btn-default", `type` := "button", onclick := { () =>
-          val genre = $("#genre").value().toString.trim
           client.foreach {
-            _.start(genre)
+            _.start()
           }
         })("Start game"),
         span(style := "margin:0px 5px"),
@@ -124,11 +123,9 @@ object ClientApp extends js.JSApp {
   class QuizClient(url: String, myUsername: String) {
     var myAnswer: Int = _
     val socket = new WebSocket(url + myUsername)
-    var myGenre: String = _
     socket.onmessage = onMessage _
 
-    def start(genre: String): Unit = {
-      myGenre = genre
+    def start(): Unit = {
       send(Message(myUsername, genre, 0, Seq(), Seq()))
     }
 
@@ -141,7 +138,7 @@ object ClientApp extends js.JSApp {
         $("#track" + myAnswer).css("background-color", "green")
         $("#track" + clicked).css("background-color", "red")
       }
-      send(Message(myUsername, myGenre,  if (myAnswer == clicked) 1 else -1, Seq(), Seq()))
+      send(Message(myUsername, genre, if (myAnswer == clicked) 1 else -1, Seq(), Seq()))
     }
 
     def onMessage(event: MessageEvent): Unit = {
@@ -152,7 +149,7 @@ object ClientApp extends js.JSApp {
       val msg = read[Message](event.data.toString)
 
       msg match {
-        case Message(username, genre, answer, tracks, scores) => {
+        case Message(username, genre, answer, tracks, scores) =>
           println("message for user " + username)
           if (tracks.isEmpty && username == myUsername) {
             $("#loginForm").addClass("hide")
@@ -198,10 +195,12 @@ object ClientApp extends js.JSApp {
           } else {
             $("#scoresPanel").addClass("hide")
           }
-        }
       }
     }
 
+    def genre: String = {
+      $("#genre").value().toString.trim
+    }
 
     def stop(): Unit = {
       AudioPlayer.stop()

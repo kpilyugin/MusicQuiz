@@ -1,122 +1,80 @@
 package controllers
 
 import java.util.concurrent.TimeUnit
+import javax.inject.{Inject, Named}
 
-import akka.actor.{Actor, Props}
+import actors.UserParentActor
+import akka.NotUsed
+import akka.actor.{ActorRef, ActorSystem}
 import akka.pattern.ask
+import akka.stream.scaladsl.{Flow, Keep, Sink, Source}
+import akka.stream.{Materializer, OverflowStrategy}
 import akka.util.Timeout
-import controllers.JsonFormatters._
-import controllers.TrackFinder._
-import music.Track
-import play.api.Play.current
-import play.api.libs.concurrent.Akka
-import play.api.libs.iteratee._
-import play.api.libs.json._
-import play.api.mvc.WebSocket.FrameFormatter
+import org.reactivestreams.Publisher
 import play.api.mvc._
 import shared.Protocol.Message
-import shared.{Protocol, User, UserScore}
 
-import scala.collection.mutable
 import scala.concurrent.ExecutionContext.Implicits.global
-import scala.concurrent.Future
+import scala.concurrent.{ExecutionContext, Future}
 
-object Application extends Controller {
+class Application @Inject()(@Named("userParentActor") userParentActor: ActorRef,
+                            @Named("scoresPersisterActor") scoresPersisterActor: ActorRef)
+                           (implicit actorSystem: ActorSystem,
+                            mat: Materializer,
+                            ec: ExecutionContext) extends Controller {
+  import format.JsonFormatters._
 
   def index = Action { implicit request =>
     Ok(views.html.index())
   }
 
-  def startWs(username: String): WebSocket[Message, Message] = WebSocket.tryAccept[Message] {
+  def startWs(username: String): WebSocket = WebSocket.acceptOrResult[Message, Message] {
     request =>
-      QuizRoom.join(username).map { io =>
+      wsFutureFlow(username).map { io =>
         Right(io)
+      }.recover {
+        case e => Left(BadRequest(e.toString))
       }
   }
-}
 
-object QuizRoom {
-  lazy val default = {
-    Akka.system.actorOf(Props[QuizRoom])
-  }
-
-  implicit val timeout = Timeout(1, TimeUnit.SECONDS)
-
-  def join(username: String): Future[(Iteratee[Message, _], Enumerator[Message])] = {
-    (default ? Join(username)).map {
-      case Connected(user, enumerator) =>
-        val iteratee = Iteratee.foreach[Message] { event =>
-          processMessage(event)
-        }
-        (iteratee, enumerator)
+  def wsFutureFlow(username: String): Future[Flow[Message, Message, _]] = {
+    val (webSocketOut: ActorRef, webSocketIn: Publisher[Message]) = createWebSocketConnections()
+    val userActorFuture = createUserActor(username, webSocketOut)
+    userActorFuture.map { userActor =>
+      createWebSocketFlow(username, webSocketIn, userActor)
     }
   }
 
-  def processMessage(message: Message): Unit = {
-    default ? Reply(message)
-  }
-}
-
-class QuizRoom extends Actor {
-  val (enumerator, channel) = Concurrent.broadcast[Message]
-  val users = mutable.Map.empty[String, Int]
-
-  def getScores: Seq[UserScore] = {
-    var scores: Seq[UserScore] = Seq()
-    users.foreach({ case (user, score) =>
-      scores = scores :+ UserScore(user, score)
-    })
-    scores
-  }
-
-  def receive = {
-    case Join(username) => {
-      if (!users.contains(username)) {
-        users.put(username, 0)
-      }
-      val user = User(username)
-      sender ! Connected(user, enumerator)
-      self ! Login(username)
+  def createWebSocketConnections(): (ActorRef, Publisher[Message]) = {
+    val source: Source[Message, ActorRef] = {
+      Source.actorRef[Message](10, OverflowStrategy.dropTail)
     }
 
-    case Quiz(genre) => startQuiz(genre)
-
-    case Login(username) =>
-      val msg: Message = Message(username, "", -1, Seq(), getScores)
-      channel.push(msg)
-
-    case Reply(message) =>
-      val score: Int = users.getOrElse(message.username, 0)
-      users.put(message.username, score + message.answer)
-      self ! Quiz(message.genre)
+    val sink: Sink[Message, Publisher[Message]] = Sink.asPublisher(fanout = false)
+    source.toMat(sink)(Keep.both).run()
   }
 
-  def startQuiz(genre: String) {
-    findTracks(genre).onSuccess({
-      case tracks: Seq[Track] =>
-        val r = scala.util.Random
-        val msg: Message = Message("", genre, r.nextInt(5), tracks, getScores)
-        channel.push(msg)
-    })
+  def createWebSocketFlow(username: String, webSocketIn: Publisher[Message], userActor: ActorRef): Flow[Message, Message, NotUsed] = {
+    val flow = {
+      val sink = Sink.actorRef(userActor, akka.actor.Status.Success(()))
+      val source = Source.fromPublisher(webSocketIn)
+      Flow.fromSinkAndSource(sink, source)
+    }
+
+    val flowWatch: Flow[Message, Message, NotUsed] = flow.watchTermination() { (_, termination) =>
+      termination.foreach { done =>
+        actorSystem.stop(userActor)
+      }
+      NotUsed
+    }
+    flowWatch
   }
-}
 
-case class Join(username: String)
-
-case class Quiz(genre: String)
-
-case class Login(username: String)
-
-case class Reply(message: Message)
-
-case class Connected(user: User, enumerator: Enumerator[Protocol.Message])
-
-case class CannotConnect(msg: String)
-
-object JsonFormatters {
-  implicit val trackFormat: Format[Track] = Json.format[Track]
-  implicit val userFormatter: Format[User] = Json.format[User]
-  implicit val scoreFormatter: Format[UserScore] = Json.format[UserScore]
-  implicit val messageFormat: Format[Message] = Json.format[Message]
-  implicit val messageFormatter: FrameFormatter[Message] = FrameFormatter.jsonFrame[Message]
+  def createUserActor(name: String, webSocketOut: ActorRef): Future[ActorRef] = {
+    val userActorFuture = {
+      implicit val timeout = Timeout(100, TimeUnit.MILLISECONDS)
+      (userParentActor ? UserParentActor.Create(name, webSocketOut, scoresPersisterActor)).mapTo[ActorRef]
+    }
+    userActorFuture
+  }
 }
