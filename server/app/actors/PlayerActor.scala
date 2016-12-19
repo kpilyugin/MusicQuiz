@@ -12,7 +12,7 @@ import music.Track
 import play.api.Configuration
 import play.api.libs.concurrent.InjectedActorSupport
 import play.api.libs.ws.WSClient
-import shared.Protocol.Message
+import shared.Protocol.{ClientMessage, ServerMessage}
 import shared.UserScore
 
 import scala.concurrent.ExecutionContext
@@ -31,16 +31,16 @@ class PlayerActor @Inject()(@Assisted("out") out: ActorRef,
 
     case Join(username) =>
       scoresActor ! Update(username, 0)
-      out ! Message(username, "", -1, Seq(), myScores)
+      out ! ServerMessage(-1, Seq(), myScores)
 
     case StartQuiz(genre) =>
       findTracks(wsClient, genre).onSuccess({
         case tracks: Seq[Track] =>
           val r = scala.util.Random
-          out ! Message("", genre, r.nextInt(5), tracks, myScores)
+          out ! ServerMessage(r.nextInt(5), tracks, myScores)
       })
 
-    case Message(username, genre, answer, _, _) =>
+    case ClientMessage(username, genre, answer) =>
       scoresActor ! Update(username, answer)
       self ! StartQuiz(genre)
   }

@@ -12,7 +12,7 @@ import akka.stream.{Materializer, OverflowStrategy}
 import akka.util.Timeout
 import org.reactivestreams.Publisher
 import play.api.mvc._
-import shared.Protocol.Message
+import shared.Protocol.{ServerMessage, ClientMessage}
 
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.{ExecutionContext, Future}
@@ -28,7 +28,7 @@ class Application @Inject()(@Named("userParentActor") userParentActor: ActorRef,
     Ok(views.html.index())
   }
 
-  def startWs(username: String): WebSocket = WebSocket.acceptOrResult[Message, Message] {
+  def startWs(username: String): WebSocket = WebSocket.acceptOrResult[ClientMessage, ServerMessage] {
     request =>
       wsFutureFlow(username).map { io =>
         Right(io)
@@ -37,31 +37,32 @@ class Application @Inject()(@Named("userParentActor") userParentActor: ActorRef,
       }
   }
 
-  def wsFutureFlow(username: String): Future[Flow[Message, Message, _]] = {
-    val (webSocketOut: ActorRef, webSocketIn: Publisher[Message]) = createWebSocketConnections()
+  def wsFutureFlow(username: String): Future[Flow[ClientMessage, ServerMessage, _]] = {
+    val (webSocketOut: ActorRef, webSocketIn: Publisher[ServerMessage]) = createWebSocketConnections()
     val userActorFuture = createUserActor(username, webSocketOut)
     userActorFuture.map { userActor =>
       createWebSocketFlow(username, webSocketIn, userActor)
     }
   }
 
-  def createWebSocketConnections(): (ActorRef, Publisher[Message]) = {
-    val source: Source[Message, ActorRef] = {
-      Source.actorRef[Message](10, OverflowStrategy.dropTail)
+  def createWebSocketConnections(): (ActorRef, Publisher[ServerMessage]) = {
+    val source: Source[ServerMessage, ActorRef] = {
+      Source.actorRef[ServerMessage](10, OverflowStrategy.dropTail)
     }
 
-    val sink: Sink[Message, Publisher[Message]] = Sink.asPublisher(fanout = false)
+    val sink: Sink[ServerMessage, Publisher[ServerMessage]] = Sink.asPublisher(fanout = false)
     source.toMat(sink)(Keep.both).run()
   }
 
-  def createWebSocketFlow(username: String, webSocketIn: Publisher[Message], userActor: ActorRef): Flow[Message, Message, NotUsed] = {
+  def createWebSocketFlow(username: String, webSocketIn: Publisher[ServerMessage], userActor: ActorRef):
+        Flow[ClientMessage, ServerMessage, NotUsed] = {
     val flow = {
       val sink = Sink.actorRef(userActor, akka.actor.Status.Success(()))
       val source = Source.fromPublisher(webSocketIn)
       Flow.fromSinkAndSource(sink, source)
     }
 
-    val flowWatch: Flow[Message, Message, NotUsed] = flow.watchTermination() { (_, termination) =>
+    val flowWatch: Flow[ClientMessage, ServerMessage, NotUsed] = flow.watchTermination() { (_, termination) =>
       termination.foreach { done =>
         actorSystem.stop(userActor)
       }

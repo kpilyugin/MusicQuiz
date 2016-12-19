@@ -3,7 +3,7 @@ package app
 import music.Track
 import org.scalajs.dom._
 import org.scalajs.jquery.{jQuery => $}
-import shared.Protocol.Message
+import shared.Protocol.{ClientMessage, ServerMessage}
 import shared.UserScore
 import upickle.default._
 
@@ -126,7 +126,7 @@ object ClientApp extends js.JSApp {
     socket.onmessage = onMessage _
 
     def start(): Unit = {
-      send(Message(myUsername, genre, 0, Seq(), Seq()))
+      send(ClientMessage(myUsername, genre, 0))
     }
 
     def reply(clicked: Int): Unit = {
@@ -138,7 +138,7 @@ object ClientApp extends js.JSApp {
         $("#track" + myAnswer).css("background-color", "green")
         $("#track" + clicked).css("background-color", "red")
       }
-      send(Message(myUsername, genre, if (myAnswer == clicked) 1 else -1, Seq(), Seq()))
+      send(ClientMessage(myUsername, genre, if (myAnswer == clicked) 1 else -1))
     }
 
     def onMessage(event: MessageEvent): Unit = {
@@ -146,12 +146,11 @@ object ClientApp extends js.JSApp {
       if (AudioPlayer.isPlaying) {
         return
       }
-      val msg = read[Message](event.data.toString)
+      val msg = read[ServerMessage](event.data.toString)
 
       msg match {
-        case Message(username, genre, answer, tracks, scores) =>
-          println("message for user " + username)
-          if (tracks.isEmpty && username == myUsername) {
+        case ServerMessage(answer, tracks, scores) =>
+          if (tracks.isEmpty) {
             $("#loginForm").addClass("hide")
             $("#gameForm").removeClass("hide")
             $("#helloUser").text("Hello, " + myUsername)
@@ -214,8 +213,8 @@ object ClientApp extends js.JSApp {
       }
     }
 
-    def send(msg: Message): Unit = {
-      socket.send(write[Message](msg))
+    def send(msg: ClientMessage): Unit = {
+      socket.send(write[ClientMessage](msg))
     }
 
     def setAnswer(answer: Int): Unit = {
